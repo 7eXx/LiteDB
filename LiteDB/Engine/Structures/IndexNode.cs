@@ -78,7 +78,7 @@ namespace LiteDB.Engine
         /// </summary>
         public static int GetNodeLength(byte level, BsonValue key, out int keyLength)
         {
-            keyLength = GetKeyLength(key);
+            keyLength = GetKeyLength(key, true);
 
             return INDEX_NODE_FIXED_SIZE +
                 (level * 2 * PageAddress.SIZE) + // prev/next
@@ -91,11 +91,11 @@ namespace LiteDB.Engine
         /// [1 byte] - KeyLength (used only in String|Byte[])
         /// [N bytes] - BsonValue in bytes (0-254)
         /// </summary>
-        public static int GetKeyLength(BsonValue key)
+        public static int GetKeyLength(BsonValue key, bool recalc)
         {
             return 1 +
                 ((key.IsString || key.IsBinary) ? 1 : 0) +
-                key.GetBytesCount(true);
+                key.GetBytesCount(recalc);
         }
 
         /// <summary>
@@ -107,10 +107,9 @@ namespace LiteDB.Engine
             _segment = segment;
 
             this.Position = new PageAddress(page.PageID, index);
-            this.Slot = segment[P_SLOT];
-            this.Level = segment[P_LEVEL];
+            this.Slot = segment.ReadByte(P_SLOT);
+            this.Level = segment.ReadByte(P_LEVEL);
             this.DataBlock = segment.ReadPageAddress(P_DATA_BLOCK);
-
             this.NextNode = segment.ReadPageAddress(P_NEXT_NODE);
 
             this.Next = new PageAddress[this.Level];
@@ -136,12 +135,17 @@ namespace LiteDB.Engine
             this.Position = new PageAddress(page.PageID, index);
             this.Slot = slot;
             this.Level = level;
-            this.Key = key;
             this.DataBlock = dataBlock;
             this.NextNode = PageAddress.Empty;
-
             this.Next = new PageAddress[level];
             this.Prev = new PageAddress[level];
+            this.Key = key;
+
+            // persist in buffer read only data
+            segment.Write(slot, P_SLOT);
+            segment.Write(level, P_LEVEL);
+            segment.Write(dataBlock, P_DATA_BLOCK);
+            segment.Write(this.NextNode, P_NEXT_NODE);
 
             for (var i = 0; i < level; i++)
             {
@@ -149,14 +153,7 @@ namespace LiteDB.Engine
                 this.SetNext((byte)i, PageAddress.Empty);
             }
 
-            // persist in buffer read only data
-            segment[P_SLOT] = slot;
-            segment[P_LEVEL] = level;
-            segment.Write(dataBlock, P_DATA_BLOCK);
             segment.WriteIndexKey(key, P_KEY);
-
-            // prevNode/nextNode must be defined as Empty
-            segment.Write(this.NextNode, P_NEXT_NODE);
 
             page.IsDirty = true;
         }
@@ -169,10 +166,13 @@ namespace LiteDB.Engine
             _page = null;
             _segment = new BufferSlice(new byte[0], 0, 0);
 
-            this.Slot = 0;
             this.Position = new PageAddress(0, 0);
+            this.Slot = 0;
             this.Level = 0;
             this.DataBlock = PageAddress.Empty;
+            this.NextNode = PageAddress.Empty;
+            this.Next = new PageAddress[0];
+            this.Prev = new PageAddress[0];
 
             // index node key IS document
             this.Key = doc;
@@ -229,23 +229,6 @@ namespace LiteDB.Engine
         public override string ToString()
         {
             return $"Pos: [{this.Position}] - Key: {this.Key}";
-        }
-    }
-
-    internal class IndexNodeComparer : IEqualityComparer<IndexNode>
-    {
-        public bool Equals(IndexNode x, IndexNode y)
-        {
-            if (object.ReferenceEquals(x, y)) return true;
-
-            if (x == null || y == null) return false;
-
-            return x.DataBlock == y.DataBlock;
-        }
-
-        public int GetHashCode(IndexNode obj)
-        {
-            return obj.Position.GetHashCode();
         }
     }
 }
